@@ -1,11 +1,11 @@
-# Scout
+# Speedy
 
 > *"Step into the dark! Five new spooky mansions!"*
 > ~ **The Dark Moon Song**, on the adventure ahead
 
-**Scout** is the command-line interface for the Evershade ecosystem. It provides an `evershade` command for managing services, agents, tasks, and pipelines from the terminal.
+**Speedy** is the command-line interface for the Evershade ecosystem. It provides an `evershade` command for managing services, agents, tasks, and pipelines from the terminal.
 
-**Luigi's Mansion origin:** *Scout* ~ a forward-looking explorer, fitting for a CLI that navigates the Evershade ecosystem.
+**Luigi's Mansion origin:** *Speedy Spirit* ~ fast ghosts from Luigi's Mansion that zoom around at high speed, perfect for a CLI that executes commands quickly.
 
 ## Features
 

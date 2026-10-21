@@ -21,6 +21,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Lint with ruff
-        run: ruff check scout/
+        run: ruff check speedy/
       - name: Run tests
         run: python -m pytest tests/ -vv --tb=short --timeout=60 -x || true

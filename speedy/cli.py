@@ -1,4 +1,4 @@
-"""Scout CLI ~ Command-line interface for the Evershade ecosystem."""
+"""Speedy CLI ~ Command-line interface for the Evershade ecosystem."""
 
 import os
 from pathlib import Path
@@ -16,10 +16,10 @@ SERVICES = {
     "slinker": os.getenv("SLINKER_URL", "http://localhost:8000"),
     "trapper": os.getenv("TRAPPER_URL", "http://localhost:3000"),
     "gobber": os.getenv("GOBBER_URL", "http://localhost:8085"),
-    "creeper": os.getenv("CREEPER_URL", "http://localhost:8086"),
+    "sneaker": os.getenv("SNEAKER_URL", "http://localhost:8086"),
     "hider": os.getenv("HIDER_URL", "http://localhost:8087"),
-    "polterpup": os.getenv("POLTERPUP_URL", "http://localhost:8088"),
-    "chauncey": os.getenv("CHAUNCEY_URL", "http://localhost:8089"),
+    "poltergeist": os.getenv("POLTERGEIST_URL", "http://localhost:8088"),
+    "clairvoya": os.getenv("CLAIRVOYA_URL", "http://localhost:8089"),
 }
 
 
@@ -30,10 +30,10 @@ def get_api_key(service: str) -> str:
         "slinker": "SLINKER_API_KEY",
         "trapper": "TRAPPER_API_KEY",
         "gobber": "GOBBER_API_KEY",
-        "creeper": "CREEPER_API_KEY",
+        "sneaker": "SNEAKER_API_KEY",
         "hider": "HIDER_API_KEY",
-        "polterpup": "POLTERPUP_API_KEY",
-        "chauncey": "CHAUNCEY_API_KEY",
+        "poltergeist": "POLTERGEIST_API_KEY",
+        "clairvoya": "CLAIRVOYA_API_KEY",
     }
     env_key = key_map.get(service, f"{service.upper()}_API_KEY")
     return os.getenv(env_key, f"{service}-dev-key-change-me")

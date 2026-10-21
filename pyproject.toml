@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scout-cli"
+name = "speedy-cli"
 version = "1.0.0"
 description = "CLI for the Evershade ecosystem"
 readme = "README.md"
@@ -18,17 +18,17 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/LukaG712/Scout"
-Repository = "https://github.com/LukaG712/Scout"
+Homepage = "https://github.com/LukaG712/Speedy"
+Repository = "https://github.com/LukaG712/Speedy"
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.0", "ruff==0.9.0"]
 
 [project.scripts]
-evershade = "scout.cli:main"
+evershade = "speedy.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["scout*"]
+include = ["speedy*"]
 
 [tool.ruff]
 target-version = "py311"
