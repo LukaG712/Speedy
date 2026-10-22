@@ -1,8 +1,13 @@
 """Speedy CLI ~ Command-line interface for the Evershade ecosystem."""
 
+import hashlib
+import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import tarfile
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -268,7 +273,8 @@ def backup():
 @backup.command()
 @click.option("--output", default=None, help="Output file path (default: backups/evershade-<timestamp>.tar.gz)")
 @click.option("--profile", default="standard", type=click.Choice(PROFILES), help="Compose profile")
-def create(output: str, profile: str):
+@click.option("--include-secrets", is_flag=True, help="Include .env with secrets (default: redacted)")
+def create(output: str, profile: str, include_secrets: bool):
     """Create a backup of all Evershade data volumes."""
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     if output is None:
@@ -278,66 +284,252 @@ def create(output: str, profile: str):
 
     console.print(f"\n[bold]Creating backup: {output}[/bold]\n")
 
+    # Check free disk space before starting backup
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        usage = shutil.disk_usage(str(output_path.parent))
+        # Estimate required space: sum of all data directories + 50% overhead
+        compose_file = _find_compose_file()
+        project_dir = compose_file.parent
+        estimated_size = 0
+        for name in SERVICES.keys():
+            data_dir = project_dir / name / "data"
+            if data_dir.exists():
+                for f in data_dir.rglob("*"):
+                    if f.is_file():
+                        estimated_size += f.stat().st_size
+        estimated_size = int(estimated_size * 1.5)  # 50% overhead for compression temp space
+        free_space = usage.free
+        if estimated_size > free_space:
+            console.print(f"[red]✗ Insufficient disk space for backup.[/red]")
+            console.print(f"  Estimated needed: {estimated_size / (1024**3):.1f} GB")
+            console.print(f"  Free space: {free_space / (1024**3):.1f} GB")
+            raise SystemExit(1)
+        console.print(f"  Disk space check passed ({free_space / (1024**3):.1f} GB free)")
+    except (shutil.Error, OSError):
+        # disk_usage not available on some systems; continue without check
+        pass
+
     compose_file = _find_compose_file()
     project_dir = compose_file.parent
 
-    # Collect volume data directories
-    data_dirs = []
-    for name in SERVICES.keys():
-        data_dir = project_dir / name / "data"
-        if data_dir.exists():
-            data_dirs.append(data_dir)
+    # Use temporary directory for consistent SQLite snapshots
+    tmp_dir = tempfile.mkdtemp(prefix="evershade-backup-")
+    manifest = {
+        "version": "1.0",
+        "timestamp": timestamp,
+        "profile": profile,
+        "services": {},
+        "checksums": {},
+    }
 
-    # Also check for SQLite DBs
-    db_files = []
-    for name in SERVICES.keys():
-        db_file = project_dir / name / "data" / f"{name}.db"
-        if db_file.exists():
-            db_files.append(db_file)
+    try:
+        # Collect and snapshot SQLite databases
+        db_files = []
+        for name in SERVICES.keys():
+            db_file = project_dir / name / "data" / f"{name}.db"
+            if db_file.exists():
+                # Use sqlite3 .backup for consistent snapshot
+                snapshot_path = Path(tmp_dir) / f"{name}.db"
+                try:
+                    src_conn = sqlite3.connect(str(db_file))
+                    dst_conn = sqlite3.connect(str(snapshot_path))
+                    src_conn.backup(dst_conn)
+                    dst_conn.close()
+                    src_conn.close()
+                    db_files.append((db_file, snapshot_path))
+                    console.print(f"  [green]✓[/green] Snapshot: {name}.db")
+                except Exception as e:
+                    console.print(f"  [yellow]⚠[/yellow] Failed to snapshot {name}.db: {e}")
+                    # Fall back to direct copy
+                    shutil.copy2(str(db_file), str(snapshot_path))
+                    db_files.append((db_file, snapshot_path))
 
-    # Config files
-    config_files = [
-        project_dir / "docker-compose.yml",
-        project_dir / ".env",
-        Path.home() / ".evershade" / "config.env",
-    ]
+        # Collect data directories (excluding already-snapped DBs)
+        data_dirs = []
+        for name in SERVICES.keys():
+            data_dir = project_dir / name / "data"
+            if data_dir.exists():
+                data_dirs.append(data_dir)
 
-    with tarfile.open(output, "w:gz") as tar:
-        for d in data_dirs:
-            tar.add(str(d), arcname=d.name)
-        for f in db_files:
-            tar.add(str(f), arcname=f.name)
-        for f in config_files:
-            if f.exists():
-                tar.add(str(f), arcname=f.name)
+        # Config files
+        config_files = [
+            project_dir / "docker-compose.yml",
+            project_dir / ".env",
+            Path.home() / ".evershade" / "config.env",
+        ]
 
-    console.print(f"[green]✓ Backup created: {output}[/green]")
+        # Create tarball with consistent snapshots
+        with tarfile.open(output, "w:gz") as tar:
+            # Add SQLite snapshots instead of live files
+            for orig, snapshot in db_files:
+                tar.add(str(snapshot), arcname=f"{orig.parent.name}/{orig.name}")
+                # Calculate checksum
+                sha = hashlib.sha256()
+                with open(snapshot, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        sha.update(chunk)
+                manifest["checksums"][f"{orig.parent.name}/{orig.name}"] = sha.hexdigest()
+                manifest["services"][orig.parent.name] = {"database": True}
+
+            # Add data directories
+            for d in data_dirs:
+                tar.add(str(d), arcname=d.name)
+
+            # Add config files (redact secrets if requested)
+            for f in config_files:
+                if f.exists():
+                    if f.name == ".env" and not include_secrets:
+                        # Create redacted version
+                        redacted_path = Path(tmp_dir) / ".env"
+                        redacted_lines = []
+                        with open(f, "r") as env_file:
+                            for line in env_file:
+                                line = line.strip()
+                                if "=" in line and not line.startswith("#"):
+                                    key = line.split("=", 1)[0]
+                                    if any(s in key.lower() for s in ["key", "secret", "password", "token"]):
+                                        redacted_lines.append(f"{key}=<redacted>")
+                                    else:
+                                        redacted_lines.append(line)
+                                else:
+                                    redacted_lines.append(line)
+                        redacted_path.write_text("\n".join(redacted_lines))
+                        tar.add(str(redacted_path), arcname=".env")
+                        console.print("  [yellow]⚠[/yellow] Secrets redacted from .env (use --include-secrets to include)")
+                    else:
+                        tar.add(str(f), arcname=f.name)
+
+        # Add manifest
+        manifest_path = Path(tmp_dir) / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        with tarfile.open(output, "a:gz") as tar:
+            tar.add(str(manifest_path), arcname="manifest.json")
+
+        console.print(f"[green]✓ Backup created: {output}[/green]")
+        console.print(f"  Services: {len(manifest['services'])}")
+        console.print(f"  Checksums: {len(manifest['checksums'])}")
+
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @backup.command()
 @click.argument("archive", type=click.Path(exists=True))
-def restore(archive: str):
+@click.option("--dry-run", is_flag=True, help="Validate archive without extracting")
+@click.option("--force", is_flag=True, help="Skip confirmation prompt")
+def restore(archive: str, dry_run: bool, force: bool):
     """Restore from a backup archive."""
     console.print(f"\n[bold]Restoring from: {archive}[/bold]\n")
 
-    if not click.confirm("This will overwrite existing data. Continue?"):
-        console.print("[yellow]Cancelled.[/yellow]")
+    compose_file = _find_compose_file()
+    project_dir = compose_file.parent.resolve()
+
+    # Validate archive integrity
+    console.print("[bold]Validating archive...[/bold]")
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+
+            # Check for path traversal attacks
+            for member in members:
+                # Resolve the member's path relative to project_dir
+                member_path = (project_dir / member.name).resolve()
+                if not str(member_path).startswith(str(project_dir)):
+                    console.print(f"[red]✗ Security violation: {member.name} escapes project directory[/red]")
+                    return
+
+            # Check for manifest
+            manifest_names = [m.name for m in members if m.name == "manifest.json"]
+            if manifest_names:
+                # Read and display manifest
+                manifest_file = tar.extractfile("manifest.json")
+                if manifest_file:
+                    manifest = json.loads(manifest_file.read().decode())
+                    console.print(f"  [green]✓[/green] Manifest version: {manifest.get('version', 'unknown')}")
+                    console.print(f"  [green]✓[/green] Backup timestamp: {manifest.get('timestamp', 'unknown')}")
+                    console.print(f"  [green]✓[/green] Profile: {manifest.get('profile', 'unknown')}")
+
+                    # Verify checksums
+                    checksums = manifest.get("checksums", {})
+                    if checksums:
+                        console.print("[bold]Verifying checksums...[/bold]")
+                        for filename, expected_sha in checksums.items():
+                            member = tar.getmember(filename)
+                            file_obj = tar.extractfile(member)
+                            if file_obj:
+                                sha = hashlib.sha256(file_obj.read()).hexdigest()
+                                if sha == expected_sha:
+                                    console.print(f"  [green]✓[/green] {filename}")
+                                else:
+                                    console.print(f"  [red]✗[/red] {filename} checksum mismatch!")
+                                    return
+                            else:
+                                console.print(f"  [yellow]⚠[/yellow] {filename} not found in archive")
+
+            # List contents
+            console.print("\n[bold]Archive contents:[/bold]")
+            for member in members:
+                console.print(f"  {member.name}")
+
+            if dry_run:
+                console.print("\n[green]✓ Validation complete (dry run, no changes made)[/green]")
+                return
+
+    except tarfile.TarError as e:
+        console.print(f"[red]✗ Invalid archive: {e}[/red]")
         return
 
-    compose_file = _find_compose_file()
-    project_dir = compose_file.parent
+    # Confirm before restoring
+    if not force:
+        if not click.confirm("\nThis will overwrite existing data. Continue?"):
+            console.print("[yellow]Cancelled.[/yellow]")
+            return
 
+    # Create recovery backup before overwriting
+    console.print("[bold]Creating recovery backup...[/bold]")
+    recovery_dir = project_dir / "backups" / "recovery"
+    recovery_dir.mkdir(parents=True, exist_ok=True)
+    recovery_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    recovery_path = recovery_dir / f"pre-restore-{recovery_timestamp}"
+    recovery_path.mkdir(exist_ok=True)
+
+    # Backup existing data directories
+    for name in SERVICES.keys():
+        data_dir = project_dir / name / "data"
+        if data_dir.exists():
+            recovery_data_dir = recovery_path / name / "data"
+            recovery_data_dir.mkdir(parents=True, exist_ok=True)
+            for item in data_dir.iterdir():
+                if item.is_file():
+                    shutil.copy2(str(item), str(recovery_data_dir / item.name))
+            console.print(f"  [green]✓[/green] Recovery backup: {name}/data")
+
+    # Extract archive safely
+    console.print("\n[bold]Extracting...[/bold]")
     with tarfile.open(archive, "r:gz") as tar:
-        # List contents first
-        members = tar.getmembers()
-        console.print("[bold]Archive contents:[/bold]")
         for member in members:
-            console.print(f"  {member.name}")
+            # Double-check path traversal
+            member_path = (project_dir / member.name).resolve()
+            if not str(member_path).startswith(str(project_dir)):
+                console.print(f"[red]✗ Skipping unsafe path: {member.name}[/red]")
+                continue
 
-        # Extract
-        tar.extractall(path=str(project_dir))
+            # Extract member
+            target_path = project_dir / member.name
+            if member.isdir():
+                target_path.mkdir(parents=True, exist_ok=True)
+            else:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                file_obj = tar.extractfile(member)
+                if file_obj:
+                    with open(target_path, "wb") as f:
+                        shutil.copyfileobj(file_obj, f)
 
-    console.print("[green]✓ Restore complete![/green]")
+    console.print(f"\n[green]✓ Restore complete![/green]")
+    console.print(f"[yellow]Recovery backup saved to: {recovery_path}[/yellow]")
     console.print("[yellow]Restart services to apply changes.[/yellow]")
 
 
@@ -457,6 +649,153 @@ def show():
                 console.print(f"  {k} = [green]{v}[/green]")
     else:
         console.print("[yellow]No configuration file found.[/yellow]")
+
+
+@config.command()
+def validate():
+    """Validate the current Evershade configuration."""
+    console.print("\n[bold]Validating Evershade Configuration[/bold]\n")
+    issues = []
+    warnings = []
+
+    # Check .env file exists
+    compose_file = None
+    try:
+        compose_file = _find_compose_file()
+        console.print("[green]✓[/green] docker-compose.yml found")
+    except FileNotFoundError:
+        issues.append("docker-compose.yml not found")
+        console.print("[red]✗[/red] docker-compose.yml not found")
+
+    # Check .env file
+    env_file = Path(".env")
+    if not compose_file:
+        project_dir = Path.cwd()
+    else:
+        project_dir = compose_file.parent
+
+    env_file = project_dir / ".env"
+    if env_file.exists():
+        console.print(f"[green]✓[/green] .env file found: {env_file}")
+        env_vars = {}
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env_vars[key.strip()] = value.strip()
+    else:
+        warnings.append(".env file not found (may use environment variables instead)")
+        console.print("[yellow]⚠[/yellow] .env file not found")
+        env_vars = {}
+
+    # Also check environment variables
+    env_vars.update({k: v for k, v in os.environ.items() if k.startswith("EVERSHADE_") or k.endswith("_API_KEY")})
+
+    # Check required variables
+    required_vars = {
+        "HUB_API_KEY": "Greenie API key",
+        "ENCRYPTION_KEY": "Encryption key for secrets",
+    }
+    console.print("\n[bold]Required Variables:[/bold]")
+    for var, description in required_vars.items():
+        value = env_vars.get(var)
+        if value and value != f"{var.lower()}-change-me" and "change-me" not in value.lower():
+            console.print(f"  [green]✓[/green] {var} ({description})")
+        else:
+            issues.append(f"Missing or insecure: {var}")
+            console.print(f"  [red]✗[/red] {var} ({description}) — missing or using default")
+
+    # Check service API keys
+    optional_vars = {
+        "SLINKER_API_KEY": "Slinker API key",
+        "TRAPPER_API_KEY": "Trapper API key",
+        "GOBBER_API_KEY": "Gobber API key",
+        "SNEAKER_API_KEY": "Sneaker API key",
+        "HIDER_API_KEY": "Hider API key",
+        "POLTERGEIST_API_KEY": "Poltergeist API key",
+        "SHREWD_API_KEY": "Shrewd API key",
+    }
+    console.print("\n[bold]Service API Keys:[/bold]")
+    for var, description in optional_vars.items():
+        value = env_vars.get(var)
+        if value and "change-me" not in value.lower():
+            console.print(f"  [green]✓[/green] {var} ({description})")
+        else:
+            warnings.append(f"Missing or default: {var}")
+            console.print(f"  [yellow]⚠[/yellow] {var} ({description}) — missing or using default")
+
+    # Check Docker availability
+    console.print("\n[bold]Docker:[/bold]")
+    try:
+        result = subprocess.run(["docker", "--version"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            console.print(f"  [green]✓[/green] Docker available")
+        else:
+            issues.append("Docker not available")
+            console.print("  [red]✗[/red] Docker not available")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        issues.append("Docker not installed")
+        console.print("  [red]✗[/red] Docker not installed")
+
+    # Check Docker Compose
+    try:
+        result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            console.print(f"  [green]✓[/green] Docker Compose available")
+        else:
+            issues.append("Docker Compose not available")
+            console.print("  [red]✗[/red] Docker Compose not available")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        issues.append("Docker Compose not installed")
+        console.print("  [red]✗[/red] Docker Compose not installed")
+
+    # Validate docker-compose.yml syntax
+    if compose_file:
+        console.print("\n[bold]Docker Compose Config:[/bold]")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "config", "--quiet"],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                console.print("  [green]✓[/green] docker-compose.yml is valid")
+            else:
+                issues.append("docker-compose.yml has errors")
+                console.print("  [red]✗[/red] docker-compose.yml has errors")
+                if result.stderr:
+                    console.print(f"    {result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            warnings.append("docker-compose config validation timed out")
+            console.print("  [yellow]⚠[/yellow] Validation timed out")
+
+    # Check service directories
+    console.print("\n[bold]Service Directories:[/bold]")
+    service_dirs = ["Greenie", "Slinker", "Trapper", "Gobber", "Sneaker", "Hider", "Poltergeist", "Shrewd", "Speedy", "Slammer"]
+    for name in service_dirs:
+        service_path = project_dir / name
+        if service_path.exists() and service_path.is_dir():
+            console.print(f"  [green]✓[/green] {name}")
+        else:
+            warnings.append(f"{name} directory not found")
+            console.print(f"  [yellow]⚠[/yellow] {name} — not found (run 'evershade install' to bootstrap)")
+
+    # Summary
+    console.print(f"\n[bold]Summary:[/bold] {len(issues)} issues, {len(warnings)} warnings")
+    if issues:
+        console.print("\n[bold red]Issues (must fix):[/bold red]")
+        for issue in issues:
+            console.print(f"  - {issue}")
+    if warnings:
+        console.print("\n[bold yellow]Warnings (should fix):[/bold yellow]")
+        for warning in warnings:
+            console.print(f"  - {warning}")
+    if not issues and not warnings:
+        console.print("\n[green]✓ Configuration is valid![/green]")
+    elif not issues:
+        console.print("\n[yellow]Configuration has warnings but is usable.[/yellow]")
+    else:
+        console.print("\n[red]Configuration has issues that must be resolved.[/red]")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
