@@ -302,7 +302,7 @@ def create(output: str, profile: str, include_secrets: bool):
         estimated_size = int(estimated_size * 1.5)  # 50% overhead for compression temp space
         free_space = usage.free
         if estimated_size > free_space:
-            console.print(f"[red]✗ Insufficient disk space for backup.[/red]")
+            console.print("[red]✗ Insufficient disk space for backup.[/red]")
             console.print(f"  Estimated needed: {estimated_size / (1024**3):.1f} GB")
             console.print(f"  Free space: {free_space / (1024**3):.1f} GB")
             raise SystemExit(1)
@@ -384,7 +384,7 @@ def create(output: str, profile: str, include_secrets: bool):
                         # Create redacted version
                         redacted_path = Path(tmp_dir) / ".env"
                         redacted_lines = []
-                        with open(f, "r") as env_file:
+                        with open(f) as env_file:
                             for line in env_file:
                                 line = line.strip()
                                 if "=" in line and not line.startswith("#"):
@@ -528,7 +528,7 @@ def restore(archive: str, dry_run: bool, force: bool):
                     with open(target_path, "wb") as f:
                         shutil.copyfileobj(file_obj, f)
 
-    console.print(f"\n[green]✓ Restore complete![/green]")
+    console.print("\n[green]✓ Restore complete![/green]")
     console.print(f"[yellow]Recovery backup saved to: {recovery_path}[/yellow]")
     console.print("[yellow]Restart services to apply changes.[/yellow]")
 
@@ -729,7 +729,7 @@ def validate():
     try:
         result = subprocess.run(["docker", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
-            console.print(f"  [green]✓[/green] Docker available")
+            console.print("  [green]✓[/green] Docker available")
         else:
             issues.append("Docker not available")
             console.print("  [red]✗[/red] Docker not available")
@@ -741,7 +741,7 @@ def validate():
     try:
         result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
-            console.print(f"  [green]✓[/green] Docker Compose available")
+            console.print("  [green]✓[/green] Docker Compose available")
         else:
             issues.append("Docker Compose not available")
             console.print("  [red]✗[/red] Docker Compose not available")
