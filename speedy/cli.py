@@ -94,6 +94,7 @@ def main():
 
 # ─── Status ─────────────────────────────────────────────────────
 
+
 @main.command()
 def status():
     """Check the status of all Evershade services."""
@@ -106,7 +107,11 @@ def status():
     for name, url in SERVICES.items():
         try:
             response = httpx.get(f"{url}/health", timeout=3)
-            status = "[bold green]✓ Online[/bold green]" if response.status_code == 200 else "[bold yellow]⚠ Error[/bold yellow]"
+            status = (
+                "[bold green]✓ Online[/bold green]"
+                if response.status_code == 200
+                else "[bold yellow]⚠ Error[/bold yellow]"
+            )
         except Exception:
             status = "[bold red]✗ Offline[/bold red]"
         table.add_row(name.capitalize(), url, status)
@@ -115,6 +120,7 @@ def status():
 
 
 # ─── Install ────────────────────────────────────────────────────
+
 
 @main.command()
 @click.option("--profile", default="standard", type=click.Choice(PROFILES), help="Compose profile to install")
@@ -140,6 +146,7 @@ def install(profile: str, pull: bool):
 
 # ─── Start ──────────────────────────────────────────────────────
 
+
 @main.command()
 @click.option("--profile", default="standard", type=click.Choice(PROFILES), help="Compose profile to start")
 def start(profile: str):
@@ -153,6 +160,7 @@ def start(profile: str):
 
 
 # ─── Stop ───────────────────────────────────────────────────────
+
 
 @main.command()
 @click.option("--profile", default="standard", type=click.Choice(PROFILES), help="Compose profile to stop")
@@ -172,6 +180,7 @@ def stop(profile: str, remove_volumes: bool):
 
 # ─── Logs ───────────────────────────────────────────────────────
 
+
 @main.command()
 @click.option("--service", help="Show logs for a specific service")
 @click.option("--profile", default="standard", type=click.Choice(PROFILES), help="Compose profile")
@@ -186,6 +195,7 @@ def logs(service: str, profile: str, tail: int):
 
 
 # ─── Doctor ─────────────────────────────────────────────────────
+
 
 @main.command()
 def doctor():
@@ -263,6 +273,7 @@ def doctor():
 
 
 # ─── Backup ─────────────────────────────────────────────────────
+
 
 @main.group()
 def backup():
@@ -397,7 +408,9 @@ def create(output: str, profile: str, include_secrets: bool):
                                     redacted_lines.append(line)
                         redacted_path.write_text("\n".join(redacted_lines))
                         tar.add(str(redacted_path), arcname=".env")
-                        console.print("  [yellow]⚠[/yellow] Secrets redacted from .env (use --include-secrets to include)")
+                        console.print(
+                            "  [yellow]⚠[/yellow] Secrets redacted from .env (use --include-secrets to include)"
+                        )
                     else:
                         tar.add(str(f), arcname=f.name)
 
@@ -535,6 +548,7 @@ def restore(archive: str, dry_run: bool, force: bool):
 
 # ─── Agents ─────────────────────────────────────────────────────
 
+
 @main.group()
 def agents():
     """Manage AI agents."""
@@ -572,6 +586,7 @@ def list_agents():
 
 # ─── Task ───────────────────────────────────────────────────────
 
+
 @main.group()
 def task():
     """Manage tasks."""
@@ -605,6 +620,7 @@ def submit(service: str, prompt: str):
 
 
 # ─── Config ─────────────────────────────────────────────────────
+
 
 @main.group()
 def config():
@@ -755,7 +771,9 @@ def validate():
         try:
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_file), "config", "--quiet"],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode == 0:
                 console.print("  [green]✓[/green] docker-compose.yml is valid")
@@ -770,7 +788,18 @@ def validate():
 
     # Check service directories
     console.print("\n[bold]Service Directories:[/bold]")
-    service_dirs = ["Greenie", "Slinker", "Trapper", "Gobber", "Sneaker", "Hider", "Poltergeist", "Shrewd", "Speedy", "Slammer"]
+    service_dirs = [
+        "Greenie",
+        "Slinker",
+        "Trapper",
+        "Gobber",
+        "Sneaker",
+        "Hider",
+        "Poltergeist",
+        "Shrewd",
+        "Speedy",
+        "Slammer",
+    ]
     for name in service_dirs:
         service_path = project_dir / name
         if service_path.exists() and service_path.is_dir():
