@@ -1,8 +1,5 @@
 # Speedy
 
-> *"Step into the dark! Five new spooky mansions!"*
-> ~ **The Dark Moon Song**, on the adventure ahead
-
 **Speedy** is the command-line interface for the Evershade ecosystem. It provides an `evershade` command for managing services, agents, tasks, and pipelines from the terminal.
 
 **Luigi's Mansion origin:** *Speedy Spirit* ~ fast ghosts from Luigi's Mansion that zoom around at high speed, perfect for a CLI that executes commands quickly.
